@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>SCP: Containment Breach Mobile - Prototype</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050607;color:#ddd;font-family:system-ui,-apple-system,sans-serif;touch-action:none}
+#game{position:fixed;inset:0;width:100%;height:100%;background:#111}
+#hud{position:fixed;left:0;right:0;top:0;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));display:flex;justify-content:space-between;pointer-events:none;text-shadow:0 2px 3px #000;font-size:13px}
+#msg{position:fixed;left:50%;top:15%;transform:translateX(-50%);width:min(90vw,520px);text-align:center;color:#fff;font-weight:700;text-shadow:0 2px 4px #000;pointer-events:none}
+#controls{position:fixed;inset:auto 0 0 0;height:40%;pointer-events:none}
+#stick{position:absolute;left:18px;bottom:max(18px,env(safe-area-inset-bottom));width:135px;height:135px;border:2px solid #7775;border-radius:50%;background:#2228;pointer-events:auto}
+#knob{position:absolute;width:58px;height:58px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;background:#aaa8;border:2px solid #ddd8}
+.btn{position:absolute;width:72px;height:72px;border-radius:50%;border:2px solid #aaa8;background:#222b;color:#fff;font-weight:700;pointer-events:auto}
+#blink{right:24px;bottom:max(92px,calc(env(safe-area-inset-bottom) + 74px))}
+#run{right:110px;bottom:max(24px,calc(env(safe-area-inset-bottom) + 6px))}
+#interact{right:24px;bottom:max(8px,env(safe-area-inset-bottom));width:62px;height:62px}
+#start{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle,#24282b,#050607 70%);z-index:10}
+.panel{width:min(90vw,500px);padding:28px;background:#111d;border:1px solid #777;border-radius:10px;box-shadow:0 20px 60px #000;color:#ddd}
+.panel h1{margin-top:0;font-size:25px}
+.panel button{width:100%;padding:15px;background:#ddd;color:#111;border:0;border-radius:6px;font-weight:800;font-size:16px}
+.small{opacity:.7;font-size:12px;line-height:1.5}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud"><span id="status">HP 100</span><span id="blinkState">EYES OPEN</span></div>
+<div id="msg"></div>
+
+<div id="controls">
+  <div id="stick"><div id="knob"></div></div>
+  <button class="btn" id="blink">BLINK</button>
+  <button class="btn" id="run">RUN</button>
+  <button class="btn" id="interact">USE</button>
+</div>
+
+<div id="start">
+ <div class="panel">
+  <h1>SCP: CONTAINMENT BREACH<br>Mobile Prototype</h1>
+  <p>収容施設から脱出せよ。</p>
+  <p class="small">左の仮想スティックで移動。RUNで走る。BLINKでまばたき。赤い部屋では異常存在に注意。</p>
+  <button id="startBtn">開始</button>
+ </div>
+</div>
+
+<script>
+"use strict";
+const c=document.getElementById("game"),ctx=c.getContext("2d");
+const statusEl=document.getElementById("status"), blinkEl=document.getElementById("blinkState"), msg=document.getElementById("msg");
+let W,H,dpr,started=false,gameOver=false,last=0,blinkTimer=0,flash=0,msgTimer=0;
+function resize(){dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+"px";c.style.height=H+"px";ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener("resize",resize);resize();
+
+const map=[
+"########################",
+"#..........#...........#",
+"#.######.#.#.#########.#",
+"#.#....#.#.#.#.......#.#",
+"#.#.##.#.#.#.#.#####.#.#",
+"#...#..#...#...#...#...#",
+"###.#.#########.#.#####",
+"#...#.....#.....#.....#",
+"#.#######.#.#########.#",
+"#.........#...........#",
+"#.##################..#",
+"#.....................#",
+"########################"
+];
+const tile=56;
+let player={x:2.5*tile,y:1.5*tile,hp:100};
+let scp={x:19.5*tile,y:5.5*tile,active:false};
+let exit={x:20.5*tile,y:11.5*tile};
+let cam={x:0,y:0}, input={x:0,y:0,run:false};
+
+function wallAt(x,y){let gx=Math.floor(x/tile),gy=Math.floor(y/tile);return !map[gy]||map[gy][gx]==="#"}
+function moveEntity(e,dx,dy){
+ let nx=e.x+dx,ny=e.y+dy,r=12;
+ if(!wallAt(nx-r,e.y)&&!wallAt(nx+r,e.y)&&!wallAt(nx,e.y-r)&&!wallAt(nx,e.y+r))e.x=nx;
+ if(!wallAt(e.x-r,ny)&&!wallAt(e.x+r,ny)&&!wallAt(e.x,ny-r)&&!wallAt(e.x,ny+r))e.y=ny;
+}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function say(t,ms=2500){msg.textContent=t;msgTimer=ms}
+function reset(){player={x:2.5*tile,y:1.5*tile,hp:100};scp={x:19.5*tile,y:5.5*tile,active:false};gameOver=false;blinkTimer=0;flash=0;say("施設内で目を覚ました。出口を探せ。",3500)}
+function start(){started=true;document.getElementById("start").style.display="none";reset();last=performance.now();requestAnimationFrame(loop)}
+document.getElementById("startBtn").onclick=start;
+
+function update(dt){
+ if(gameOver)return;
+ const running=input.run;
+ const speed=(running?150:88)*dt;
+ moveEntity(player,input.x*speed,input.y*speed);
+ if(running) player.hp=Math.max(0,player.hp-1.7*dt);
+ blinkTimer=Math.max(0,blinkTimer-dt);
+ flash=Math.max(0,flash-dt);
+ msgTimer-=dt;if(msgTimer<=0)msg.textContent="";
+ if(dist(player,scp)<280)scp.active=true;
+ if(scp.active){
+   const d=dist(player,scp);
+   if(blinkTimer<=0 && d<250){
+     const a=Math.atan2(player.y-scp.y,player.x-scp.x);
+     const chase=70*dt;
+     moveEntity(scp,Math.cos(a)*chase,Math.sin(a)*chase);
+   }
+   if(d<28 && blinkTimer<=0){player.hp-=55*dt;flash=.18}
+ }
+ if(dist(player,exit)<35){say("脱出ゲート：USEで開ける",100)}
+ if(player.hp<=0){gameOver=true;say("収容違反に巻き込まれた。USEで再試行",999999)}
+}
+
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ cam.x=player.x-W/2;cam.y=player.y-H/2;
+ ctx.fillStyle="#080a0b";ctx.fillRect(0,0,W,H);
+ const startX=Math.max(0,Math.floor(cam.x/tile)-1),endX=Math.min(map[0].length-1,Math.ceil((cam.x+W)/tile)+1);
+ const startY=Math.max(0,Math.floor(cam.y/tile)-1),endY=Math.min(map.length-1,Math.ceil((cam.y+H)/tile)+1);
+ for(let y=startY;y<=endY;y++)for(let x=startX;x<=endX;x++){
+   let sx=x*tile-cam.x,sy=y*tile-cam.y;
+   if(map[y][x]==="#"){ctx.fillStyle="#303437";ctx.fillRect(sx,sy,tile,tile);ctx.strokeStyle="#191b1d";ctx.strokeRect(sx,sy,tile,tile)}
+   else{ctx.fillStyle="#15191b";ctx.fillRect(sx,sy,tile,tile);ctx.strokeStyle="#202427";ctx.strokeRect(sx,sy,tile,tile)}
+ }
+ // exit
+ ctx.fillStyle="#6a7";ctx.fillRect(exit.x-cam.x-14,exit.y-cam.y-14,28,28);
+ ctx.fillStyle="#fff";ctx.font="11px sans-serif";ctx.fillText("EXIT",exit.x-cam.x-14,exit.y-cam.y-20);
+ // SCP-173-like statue (original simple geometric design)
+ if(scp.active){
+   const sx=scp.x-cam.x,sy=scp.y-cam.y;
+   ctx.save();ctx.translate(sx,sy);
+   ctx.fillStyle="#a99b82";ctx.fillRect(-13,-19,26,38);
+   ctx.fillStyle="#111";ctx.beginPath();ctx.arc(-6,-7,3,0,7);ctx.arc(6,-7,3,0,7);ctx.fill();
+   ctx.strokeStyle="#321";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-7,5);ctx.lineTo(7,5);ctx.stroke();ctx.restore();
+ }
+ // player
+ ctx.fillStyle="#ddd";ctx.beginPath();ctx.arc(player.x-cam.x,player.y-cam.y,11,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle="#b44";ctx.beginPath();ctx.arc(player.x-cam.x,player.y-cam.y,4,0,Math.PI*2);ctx.fill();
+ // vignette
+ const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*.18,W/2,H/2,Math.max(W,H)*.7);
+ g.addColorStop(0,"transparent");g.addColorStop(1,"rgba(0,0,0,.72)");
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ if(blinkTimer>0){ctx.fillStyle="#000";ctx.fillRect(0,0,W,H)}
+ if(flash>0){ctx.fillStyle="rgba(255,0,0,.45)";ctx.fillRect(0,0,W,H)}
+ statusEl.textContent="HP "+Math.ceil(player.hp);
+ blinkEl.textContent=blinkTimer>0?"EYES CLOSED":"EYES OPEN";
+}
+
+function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;update(dt);draw();requestAnimationFrame(loop)}
+// Touch joystick
+const stick=document.getElementById("stick"),knob=document.getElementById("knob");
+let joyId=null;
+function joy(e){
+ const r=stick.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+ let dx=e.clientX-cx,dy=e.clientY-cy,m=Math.hypot(dx,dy),max=r.width*.36;
+ if(m>max){dx=dx/m*max;dy=dy/m*max}
+ input.x=dx/max;input.y=dy/max;
+ knob.style.left=(50+input.x*36)+"%";knob.style.top=(50+input.y*36)+"%";
+}
+stick.addEventListener("pointerdown",e=>{joyId=e.pointerId;stick.setPointerCapture(joyId);joy(e)});
+stick.addEventListener("pointermove",e=>{if(e.pointerId===joyId)joy(e)});
+stick.addEventListener("pointerup",e=>{if(e.pointerId===joyId){joyId=null;input.x=input.y=0;knob.style.left="50%";knob.style.top="50%"}});
+stick.addEventListener("pointercancel",()=>{joyId=null;input.x=input.y=0});
+document.getElementById("run").addEventListener("pointerdown",()=>input.run=true);
+["pointerup","pointercancel","pointerleave"].forEach(ev=>document.getElementById("run").addEventListener(ev,()=>input.run=false));
+document.getElementById("blink").addEventListener("pointerdown",()=>{if(!gameOver)blinkTimer=.55});
+document.getElementById("interact").addEventListener("pointerdown",()=>{
+ if(gameOver){reset();return}
+ if(dist(player,exit)<50){say("非常口が開いた！　脱出成功！",999999);gameOver=true}
+});
+</script>
+</body>
+</html>
